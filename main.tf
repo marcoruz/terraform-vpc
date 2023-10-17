@@ -1,9 +1,6 @@
 locals {
-    az_a = "${var.region}a"
-    az_b = "${var.region}b"
-
-    cidr_a = "10.0.1.0/24"
-    cidr_b = "10.0.2.0/24"
+  azs = ["${var.region}a", "${var.region}b"]  # Liste der Availability Zones
+  cidrs = ["10.0.1.0/24", "10.0.2.0/24"]     # Liste der CIDR-Bereiche für die Subnetze
 }
 
 resource "aws_vpc" "main" {
@@ -13,83 +10,60 @@ resource "aws_vpc" "main" {
   }
 }
 
-# https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/subnet
-resource "aws_subnet" "subnet_a" {
-vpc_id = aws_vpc.main.id
-cidr_block = local.cidr_a
-availability_zone = local.az_a
-map_public_ip_on_launch = true # Wir wollen, dass die Instanzen eine öffentliche IP bekommen
-tags = {
-Name = "TF Subnet A"
-}
-}
-resource "aws_subnet" "subnet_b" {
-vpc_id = aws_vpc.main.id
-cidr_block = local.cidr_b
-availability_zone = local.az_b
-
-map_public_ip_on_launch = true # Wir wollen, dass die Instanzen eine öffentliche IP bekommen
-tags = {
-Name = "TF Subnet B"
-}
-}
-
-# https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/internet_gateway
 resource "aws_internet_gateway" "gw" {
-vpc_id = aws_vpc.main.id
-tags = {
-Name = "TF Internet Gateway"
-}
+  vpc_id = aws_vpc.main.id
+  tags = {
+    Name = "TF Internet Gateway"
+  }
 }
 
-# https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/route_table
 resource "aws_route_table" "rt" {
-vpc_id = aws_vpc.main.id
-route {
-cidr_block = "0.0.0.0/0" # Das gesamte Internet
-gateway_id = aws_internet_gateway.gw.id # Link zu unserem erstellten Internet Gateway
-}
-tags = {
-Name = "TF Route Table"
-}
-}
-
-# https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/route_table_association
-resource "aws_route_table_association" "a" {
-subnet_id = aws_subnet.subnet_a.id
-route_table_id = aws_route_table.rt.id
-}
-resource "aws_route_table_association" "b" {
-subnet_id = aws_subnet.subnet_b.id
-route_table_id = aws_route_table.rt.id
+  vpc_id = aws_vpc.main.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.gw.id
+  }
+  tags = {
+    Name = "TF Route Table"
+  }
 }
 
-# -----------------------------------------------------------------------------------
-# EC2 Instanz zum Testen des Setupt
-# https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/security_group
 resource "aws_security_group" "sg" {
-name = "tf_sg"
-description = "Allow SSH inbound traffic"
-vpc_id = aws_vpc.main.id
-ingress {
-description = "SSH from VPC"
-from_port = 22
-to_port = 22
-protocol = "tcp"
-cidr_blocks = ["0.0.0.0/0"]
+  name = "tf_sg"
+  description = "Allow SSH inbound traffic"
+  vpc_id = aws_vpc.main.id
+  ingress {
+    description = "SSH from VPC"
+    from_port = 22
+    to_port = 22
+    protocol = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    description = "Allow all outbound traffic"
+    from_port = 0
+    to_port = 0
+    protocol = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 }
-egress {
-description = "Allow all outbound traffic"
-from_port = 0
-to_port = 0
-protocol = "-1"
-cidr_blocks = ["0.0.0.0/0"]
+
+# Schleife zur Erstellung von Subnetzen und EC2-Instanzen in verschiedenen AZs
+resource "aws_subnet" "subnets" {
+  count             = length(local.azs)
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = local.cidrs[count.index]
+  availability_zone = local.azs[count.index]
+  map_public_ip_on_launch = true
+  tags = {
+    Name = "TF Subnet ${local.azs[count.index]}"
+  }
 }
-}
-# https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/instance
-resource "aws_instance" "test" {
-ami = "ami-04e601abe3e1a910f"
-instance_type = "t2.micro"
-subnet_id = aws_subnet.subnet_a.id
-vpc_security_group_ids = [aws_security_group.sg.id]
+
+resource "aws_instance" "instances" {
+  count = length(local.azs)
+  ami = "ami-04e601abe3e1a910f"
+  instance_type = "t2.micro"
+  subnet_id = aws_subnet.subnets[count.index].id
+  vpc_security_group_ids = [aws_security_group.sg.id]
 }
